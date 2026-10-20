@@ -1,0 +1,64 @@
+# ===============================
+# Node / Electron
+# ===============================
+node_modules/
+dist/
+out/
+app/out/
+app/dist/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===============================
+# Python
+# ===============================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+app/core/.venv/
+
+# Caches and temporary files
+.cache/
+core/.cache/
+app/core/.cache/
+*.npz
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===============================
+# Logs and Environments
+# ===============================
+*.log
+*.log*
+.env
+.env*.local
+.env.production
+.env.development
+
+# ===============================
+# Operating System & IDE
+# ===============================
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+
+# ===============================
+# Personal Brain & Resume Documents
+# ===============================
+resume.md
+02_work_history.md
+03_education_and_background.md
+*.docx
+docs/*.docx
+docs/master_resume.md
+docs/candidate_profile.md

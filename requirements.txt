@@ -1,0 +1,9 @@
+# Requirements for Interview Buddy
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pyaudiowpatch>=0.2.12
+faster-whisper>=1.1.0
+numpy>=1.26,<3
+httpx>=0.27
+nvidia-cublas-cu12>=12.9.2.10
+pytest
