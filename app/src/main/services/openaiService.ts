@@ -28,15 +28,15 @@ export class OpenAIService extends EventEmitter {
 
   constructor(_config?: OpenAIConfig) {
     super()
+    coreLink.on('token', this.hToken)
+    coreLink.on('answer_end', this.hAnswerEnd)
+    coreLink.on('answer_error', this.hAnswerError)
   }
 
   async generateAnswer(question: string): Promise<void> {
-    coreLink.connect();
-    coreLink.on('token', this.hToken);
-    coreLink.on('answer_end', this.hAnswerEnd);
-    coreLink.on('answer_error', this.hAnswerError);
-    console.log(`[openaiService] asking core: "${question.slice(0, 80)}..."`);
-    coreLink.send({ t: 'ask', text: question });
+    coreLink.connect()
+    console.log(`[openaiService] asking core: "${question.slice(0, 80)}..."`)
+    coreLink.send({ t: 'ask', text: question })
   }
 
   clearHistory(): void {

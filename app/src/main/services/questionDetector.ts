@@ -13,7 +13,9 @@ const QUESTION_STARTERS = [
   /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(do|does|did)\s+(you|we|they)\b/i,
   /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(have|has)\s+(you|we|they)\b/i,
   /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(is|are|was|were)\s+(there|this|that|it|your)\b/i,
-  /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(tell me|describe|explain|walk me through|give me|share)\b/i
+  /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(tell me|describe|explain|walk me through|give me|share)\b/i,
+  /(?:^|[,;.]\s*|\b(?:so|now|well|and|then|please)\s+)(why don't you|why not)\b/i,
+  /(?:^|[,;.]\s*)(i'd like to|i'd love to|i want to|i'm interested in|i'm curious)\b/i
 ]
 
 // Question ending patterns
@@ -24,6 +26,15 @@ const INTERVIEW_PATTERNS = [
   /tell (me|us) about (yourself|a time|your|the|a challenge|a project|an experience)/i,
   /tell (me|us) a (little )?bit about (yourself|your|the)/i,
   /walk (me|us) through (your|the|a)/i,
+  /why don't you (tell|walk|explain|share|give|talk)/i,
+  /(?:i'd|i would) (?:like|love) to (?:know|hear|understand|learn) (?:about|more about)?/i,
+  /(?:i'm|i am) (?:interested in|curious about) (?:why|how|what|your)?/i,
+  /why (?:did|do|would|have|are)?\s*you\s+(?:choose|decide|pick|leave|join|select|study|major)/i,
+  /(?:can|could|would|will) you (?:tell|walk|explain|share|talk|speak|discuss|describe)/i,
+  /what (?:led|brought|prompted) you to/i,
+  /how did you (?:come to|decide to|get into)/i,
+  /what made you (?:decide|choose|want)/i,
+  /talk to (?:me|us) about/i,
   /why (do|did|should|would|are) you/i,
   /what (is|are|was|were) your/i,
   /what (is|are) the/i,
@@ -37,7 +48,6 @@ const INTERVIEW_PATTERNS = [
   /what motivates you/i,
   /how do you handle/i,
   /tell me about a challenge/i,
-  /can you (describe|explain|tell|give|walk)/i,
   /what (challenges|problems|issues)/i,
   /how (would|do) you (approach|solve|handle|deal)/i,
   /what (makes|made) you/i,
@@ -101,6 +111,43 @@ export class QuestionDetector extends EventEmitter {
   }
 
   /**
+   * If an utterance has conversational preamble/filler before the actual interview question,
+   * extract the question sentence(s) so RAG and LLM receive a clean, focused prompt.
+   */
+  extractCoreQuestion(text: string): string {
+    const trimmed = text.trim()
+    // Split into sentences using punctuation boundaries
+    const sentences = trimmed.split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean)
+    if (sentences.length <= 1) {
+      return trimmed
+    }
+
+    // Look from the end backwards to find where the interview prompt/question begins
+    for (let i = sentences.length - 1; i >= 0; i--) {
+      const sentence = sentences[i]
+      if (this.hasQuestionMarkers(sentence)) {
+        // Return from this sentence to the end of the utterance
+        const extracted = sentences.slice(i).join(' ').trim()
+        if (extracted.length >= 10) {
+          return extracted
+        }
+      }
+    }
+    return trimmed
+  }
+
+  private hasQuestionMarkers(text: string): boolean {
+    if (text.includes('?')) return true
+    for (const pattern of INTERVIEW_PATTERNS) {
+      if (pattern.test(text)) return true
+    }
+    for (const pattern of QUESTION_STARTERS) {
+      if (pattern.test(text)) return true
+    }
+    return false
+  }
+
+  /**
    * Check for question immediately (early detection) - for high-confidence questions only
    * Returns the detected question if found, null otherwise
    */
@@ -123,12 +170,13 @@ export class QuestionDetector extends EventEmitter {
       return null
     }
 
-    const detection = this.analyzeQuestion(trimmedText)
+    const coreText = this.extractCoreQuestion(trimmedText)
+    const detection = this.analyzeQuestion(coreText)
 
     // Only trigger early if very high confidence
-    if (detected.confidence >= this.earlyDetectionThreshold) {
+    if (detection.confidence >= this.earlyDetectionThreshold) {
       console.log(
-        `[QuestionDetector] ⚡ EARLY DETECTION: "${trimmedText}" (confidence: ${detection.confidence.toFixed(2)})`
+        `[QuestionDetector] ⚡ EARLY DETECTION: "${coreText}" (confidence: ${detection.confidence.toFixed(2)})`
       )
       this.lastEarlyDetection = trimmedText
       return detection
@@ -168,13 +216,14 @@ export class QuestionDetector extends EventEmitter {
       return
     }
 
-    const detection = this.analyzeQuestion(fullText)
+    const coreText = this.extractCoreQuestion(fullText)
+    const detection = this.analyzeQuestion(coreText)
     console.log(
-      `[QuestionDetector] Analyzed: "${fullText}" - Confidence: ${detection.confidence.toFixed(2)}, Type: ${detection.questionType}`
+      `[QuestionDetector] Analyzed: "${coreText}" - Confidence: ${detection.confidence.toFixed(2)}, Type: ${detection.questionType}`
     )
 
-    if (detected.confidence >= this.confidenceThreshold) {
-      console.log(`[QuestionDetector] ✓ QUESTION DETECTED: "${fullText}"`)
+    if (detection.confidence >= this.confidenceThreshold) {
+      console.log(`[QuestionDetector] ✓ QUESTION DETECTED: "${coreText}"`)
       this.emit('questionDetected', detection)
     } else {
       console.log(`[QuestionDetector] ✗ Not a question (confidence too low)`)
@@ -226,9 +275,9 @@ export class QuestionDetector extends EventEmitter {
       }
     }
 
-    // Check for imperative interview requests (tell me, describe, explain, walk me through)
-    if (/\b(tell\s+me|tell\s+us|describe|explain|share|give\s+me|walk\s+me\s+through)\b/i.test(text)) {
-      confidence += 0.3
+    // Check for imperative interview requests (tell me, describe, explain, walk me through, like to know, etc.)
+    if (/\b(tell\s+me|tell\s+us|describe|explain|share|give\s+me|walk\s+me\s+through|like\s+to\s+know|love\s+to\s+know|interested\s+in|curious\s+about)\b/i.test(text)) {
+      confidence += 0.35
       if (questionType === 'unknown') questionType = 'indirect'
     }
 

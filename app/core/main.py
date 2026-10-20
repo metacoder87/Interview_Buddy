@@ -272,6 +272,9 @@ class Core:
                         "options": {"temperature": 0.4, "num_predict": 700},
                     },
                 ) as resp:
+                    if resp.status_code != 200:
+                        err_body = await resp.aread()
+                        raise RuntimeError(f"Ollama returned HTTP {resp.status_code}: {err_body.decode('utf-8', errors='ignore')}")
                     async for line in resp.aiter_lines():
                         if not line.strip():
                             continue
@@ -279,9 +282,11 @@ class Core:
                             obj = json.loads(line)
                         except Exception:
                             continue
+                        if "error" in obj:
+                            raise RuntimeError(f"Ollama error: {obj['error']}")
                         msg = obj.get("message", {})
-                        # reasoning models (qwen3) stream a separate 'thinking'
-                        # field — never show that on the overlay, only content.
+                        # reasoning models stream a separate 'thinking' field —
+                        # only stream content to the overlay.
                         tok = msg.get("content", "")
                         if tok:
                             full += tok

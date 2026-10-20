@@ -91,6 +91,7 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
         whisperService = null
       }
       if (openaiService) {
+        openaiService.dispose()
         openaiService.removeAllListeners()
         openaiService = null
       }
@@ -193,6 +194,7 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
     }
 
     if (openaiService) {
+      openaiService.dispose()
       openaiService.removeAllListeners()
       openaiService = null
     }
