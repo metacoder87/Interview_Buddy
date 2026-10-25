@@ -7,6 +7,7 @@ import { ScreenshotService } from '../services/screenshotService'
 import { AppSettings, SettingsManager } from '../services/settingsManager'
 import { VisionService } from '../services/visionService'
 import { WhisperService } from '../services/whisperService'
+import { coreLink } from '../services/coreLink'
 
 let whisperService: WhisperService | null = null
 let openaiService: OpenAIService | null = null
@@ -75,110 +76,73 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
   // Audio capture handlers
   ipcMain.handle('start-capture', async () => {
     const settings = settingsManager?.getSettings()
-
-    // Debug: Log API key status (not the actual keys)
-    console.log('API Keys configured:', {
-      openai: settings?.openaiApiKey ? `Yes (${settings.openaiApiKey.length} chars)` : 'No'
-    })
-
-    // Local-core mode: no API keys required (Ollama + local STT).
-    // The Python core (buddy-core) must be running on 127.0.0.1:8790.
+    console.log('[handlers] start-capture: local buddy-core mode')
 
     try {
-      // IMPORTANT: Clean up any existing services/listeners first to prevent duplicates
-      if (whisperService) {
-        whisperService.removeAllListeners()
-        whisperService = null
-      }
-      if (openaiService) {
-        openaiService.dispose()
-        openaiService.removeAllListeners()
-        openaiService = null
-      }
+      // Clean up any previous listeners/services to prevent duplicates
+      coreLink.removeAllListeners('transcript')
+      coreLink.removeAllListeners('utteranceEnd')
+      coreLink.removeAllListeners('speechStarted')
+      coreLink.removeAllListeners('answer_start')
+      coreLink.removeAllListeners('token')
+      coreLink.removeAllListeners('answer_end')
+      coreLink.removeAllListeners('answer_error')
       questionDetector?.removeAllListeners()
 
-      // Initialize Whisper service for transcription
-      whisperService = new WhisperService({
-        apiKey: settings.openaiApiKey,
-        model: 'whisper-1',
-        language: 'en'
-      })
-
-      // Initialize OpenAI service for answer generation
-      openaiService = new OpenAIService({
-        apiKey: settings.openaiApiKey,
-        model: settings.openaiModel,
-        resumeDescription: settings.resumeDescription
-      })
-
-      // Set up OpenAI event listeners ONCE
-      openaiService.on('stream', (chunk) => {
-        mainWindow?.webContents.send('answer-stream', chunk)
-      })
-
-      openaiService.on('complete', (answer) => {
-        mainWindow?.webContents.send('answer-complete', answer)
-      })
-
-      // Set up Whisper event listeners
-      whisperService.on('transcript', async (event) => {
-        console.log('Transcript received:', event.text)
+      // Forward buddy-core transcript events to renderer
+      coreLink.on('transcript', (event) => {
         questionDetector?.addTranscript(event.text, event.isFinal)
         mainWindow?.webContents.send('transcript', event)
 
-        // Try early detection for faster response on high-confidence questions
-        if (event.isFinal && questionDetector && openaiService) {
+        // Early detection for high-confidence questions on final transcripts
+        if (event.isFinal && questionDetector) {
           const earlyDetection = questionDetector.checkEarlyDetection(event.text)
           if (earlyDetection) {
-            console.log('Early question detection triggered:', earlyDetection.text)
+            console.log('[handlers] ⚡ Early detection triggered:', earlyDetection.text)
             mainWindow?.webContents.send('question-detected', earlyDetection)
-            try {
-              await openaiService.generateAnswer(earlyDetection.text)
-            } catch (error) {
-              mainWindow?.webContents.send('answer-error', (error as Error).message)
-            }
+            coreLink.send({ t: 'ask', text: earlyDetection.text })
           }
         }
       })
 
-      whisperService.on('utteranceEnd', () => {
-        console.log('Processing utterance...')
+      coreLink.on('utteranceEnd', () => {
         questionDetector?.onUtteranceEnd()
         mainWindow?.webContents.send('utterance-end')
       })
 
-      whisperService.on('speechStarted', () => {
+      coreLink.on('speechStarted', () => {
         mainWindow?.webContents.send('speech-started')
       })
 
-      whisperService.on('error', (error) => {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown capture error'
-        console.error('Whisper error:', errorMessage)
-        mainWindow?.webContents.send('capture-error', errorMessage)
+      // Forward buddy-core answer events to renderer
+      coreLink.on('token', (text: string) => {
+        mainWindow?.webContents.send('answer-stream', text)
       })
 
-      // Set up question detector listener ONCE
-      questionDetector?.on('questionDetected', async (detection) => {
-        console.log('Question detected:', detection.text)
+      coreLink.on('answer_end', ({ full }: { full: string; latency_ms: number }) => {
+        mainWindow?.webContents.send('answer-complete', full)
+      })
+
+      coreLink.on('answer_error', (error: string) => {
+        mainWindow?.webContents.send('answer-error', error)
+      })
+
+      // When QuestionDetector fires (utterance-end path), route to buddy-core
+      questionDetector?.on('questionDetected', (detection) => {
+        console.log('[handlers] Question detected → buddy-core ask:', detection.text)
         mainWindow?.webContents.send('question-detected', detection)
-
-        if (openaiService) {
-          try {
-            await openaiService.generateAnswer(detection.text)
-          } catch (error) {
-            mainWindow?.webContents.send('answer-error', (error as Error).message)
-          }
-        }
+        coreLink.send({ t: 'ask', text: detection.text })
       })
 
-      // Start Whisper service
-      whisperService.start()
-      isCapturing = true
-      console.log('Audio capture started successfully')
+      // Connect to buddy-core and start audio session
+      coreLink.connect()
+      coreLink.send({ t: 'start' })
 
+      isCapturing = true
+      console.log('[handlers] buddy-core session started')
       return { success: true }
     } catch (error) {
-      console.error('start-capture error:', error)
+      console.error('[handlers] start-capture error:', error)
       const errorMessage = error instanceof Error ? error.message : 'Failed to start capture'
       throw new Error(errorMessage)
     }
@@ -187,22 +151,20 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('stop-capture', async () => {
     isCapturing = false
 
-    if (whisperService) {
-      whisperService.stop()
-      whisperService.removeAllListeners()
-      whisperService = null
-    }
-
-    if (openaiService) {
-      openaiService.dispose()
-      openaiService.removeAllListeners()
-      openaiService = null
-    }
+    // Stop the buddy-core audio session
+    coreLink.send({ t: 'stop' })
+    coreLink.removeAllListeners('transcript')
+    coreLink.removeAllListeners('utteranceEnd')
+    coreLink.removeAllListeners('speechStarted')
+    coreLink.removeAllListeners('token')
+    coreLink.removeAllListeners('answer_end')
+    coreLink.removeAllListeners('answer_error')
+    coreLink.removeAllListeners('answer_start')
 
     // Remove question detector listeners to prevent duplicates on next start
     questionDetector?.removeAllListeners()
     questionDetector?.clearBuffer()
-    console.log('Audio capture stopped')
+    console.log('[handlers] buddy-core session stopped')
 
     return { success: true }
   })
@@ -230,6 +192,36 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
       name: source.name,
       thumbnail: source.thumbnail.toDataURL()
     }))
+  })
+
+  // Ollama model list — lets the UI show a live dropdown of all installed models
+  ipcMain.handle('fetch-ollama-models', async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:11434/api/tags')
+      if (!res.ok) throw new Error(`Ollama responded ${res.status}`)
+      const data = (await res.json()) as { models: Array<{ name: string }> }
+      const models = (data.models || []).map((m) => ({ id: m.name, name: m.name }))
+      return { success: true, models }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not reach Ollama'
+      console.warn('[handlers] fetch-ollama-models failed:', msg)
+      return { success: false, error: msg, models: [] }
+    }
+  })
+
+  // Set Ollama model at runtime by writing to buddy-core config
+  ipcMain.handle('set-ollama-model', async (_event, modelName: string) => {
+    try {
+      const configPath = require('path').join(__dirname, '..', '..', '..', 'core', 'config.json')
+      const fs = require('fs')
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+      cfg.llm_model = modelName
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2))
+      console.log('[handlers] Ollama model updated to:', modelName)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+    }
   })
 
   // Window control handlers

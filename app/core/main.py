@@ -23,13 +23,23 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .audio_capture import TARGET_RATE, LoopbackCapture
 from .brain import Brain
+from .router import HybridRouter
 from .prompts import build_system_prompt
 from .stt import Transcriber
+
+try:
+    from app.ai.factory import ProviderFactory
+except ImportError:
+    try:
+        from .ai.factory import ProviderFactory
+    except ImportError:
+        ProviderFactory = None
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 
 def load_config() -> dict:
+    """Load configuration from JSON file and resolve the brain directory."""
     with open(CONFIG_PATH, encoding="utf-8") as f:
         cfg = json.load(f)
     # Resolve brain_dir relative to the config file so the path is stable
@@ -46,7 +56,22 @@ RING_SECONDS = 30
 FRAME_SAMPLES = int(0.03 * TARGET_RATE)  # 30 ms endpointing frame
 
 
+def rms(x: np.ndarray | list[float]) -> float:
+    """Compute Root Mean Square for endpointing signal energy."""
+    if len(x) == 0:
+        return 0.0
+    arr = np.asarray(x, dtype=np.float32)
+    return float(np.sqrt(np.mean(np.square(arr))))
+
+
 class Core:
+    """
+    Main application core for Interview Buddy.
+    
+    Manages the lifecycle of the RAG brain, STT engine, and the 
+    live WebSocket session loop.
+    """
+
     def __init__(self):
         self.brain = Brain(CFG["brain_dir"], CFG["ollama_url"])
         self.transcriber: Transcriber | None = None
@@ -61,9 +86,24 @@ class Core:
         self._chunks: list[str] = []
         self._vectors = None
 
+        # Router and provider instances — share the Brain so embeddings are loaded only once
+        self.router = HybridRouter(CFG, brain=self.brain)
+        self.provider = ProviderFactory.create_provider(CFG) if ProviderFactory else None
+
+    def load(self, force: bool = False):
+        """Helper to load brain chunks and vectors for testing."""
+        self.brain.load(force=force)
+        self._chunks = self.brain._chunks
+        self._vectors = self.brain._vectors
+
+    def retrieve(self, query: str, k: int = 8) -> list[str]:
+        """Helper to retrieve brain chunks for testing."""
+        return self.brain.retrieve(query, k=k)
+
     # ---------------- lifecycle ----------------
 
     async def startup(self):
+        """Initialize components during FastAPI startup."""
         # Offload brain loading to a thread to prevent blocking the FastAPI startup (which holds the port)
         # This ensures that /health remains responsive while the brain is being initialized.
         try:
@@ -96,6 +136,7 @@ class Core:
     # ---------------- ws plumbing ----------------
 
     async def broadcast(self, msg: dict):
+        """Broadcast a message to all connected shell clients."""
         dead: list[WebSocket] = []
         for ws in list(self.clients):
             try:
@@ -106,6 +147,7 @@ class Core:
             self.clients.discard(ws)
 
     def log_session(self, kind: str, **fields):
+        """Log a session event to a local JSONL file."""
         if self.session_dir is None:
             return
         try:
@@ -117,6 +159,7 @@ class Core:
     # ---------------- session control ----------------
 
     async def start_session(self):
+        """Initialize session storage and start the live loop."""
         if self.session_active:
             return
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -127,6 +170,7 @@ class Core:
         await self.broadcast({"t": "status", "msg": f"session started ({ts})"})
 
     async def stop_session(self):
+        """Stop the live loop and cleanup resources."""
         if not self.session_active:
             return
         self.session_active = False
@@ -141,102 +185,112 @@ class Core:
     # ---------------- the live loop ----------------
 
     async def _session_loop(self):
-        cap = LoopbackCapture()
-        self._capture = cap
-        ring: list[float] = []
-        total_written = 0
-        last_tick = time.time()
-        noise_floor = 0.0025
-        in_speech = False
-        speech_start_total = 0
-        silence_since: float | None = None
-        last_partial_at = 0.0
-        last_partial_text = ""
-        stt_lock = asyncio.Lock()
-
-        def rms(x: np.ndarray) -> float:
-            return float(np.sqrt(np.mean(np.square(x)))) if len(x) else 0.0
-
-        await self.broadcast({"t": "status", "msg": f"listening on {cap.device_name!r}"})
-
-        while self.session_active:
-            samples, elapsed = cap.read(timeout=0.02)
-            now = time.time()
-            expected = int(elapsed * TARGET_RATE)
-            if len(samples) == 0 and expected > 0:
-                samples = np.zeros(expected, dtype=np.float32)
-
-            ring.extend(samples.tolist())
-            total_written += len(samples)
-            max_samples = RING_SECONDS * TARGET_RATE
-            if len(ring) > max_samples:
-                excess = len(ring) - max_samples
-                del ring[:excess]
-                speech_start_total = max(0, speech_start_total - excess)
-            last_tick = now
-
-            # ---- endpointing on the newest 30 ms frame ----
-            frame = np.array(ring[-FRAME_SAMPLES:], dtype=np.float32) if len(ring) >= FRAME_SAMPLES else np.zeros(0)
-            r = rms(frame)
-            if r < noise_floor * 1.6:
-                noise_floor = max(0.0005, 0.97 * noise_floor + 0.03 * r)
-            thr = max(noise_floor * 3.0, 0.004)
-
-            if not in_speech and len(frame) and r > thr:
-                in_speech = True
-                speech_start_total = total_written - len(frame)
-                silence_since = None
-                await self.broadcast({"t": "speech_started"})
-            elif in_speech:
-                if r <= thr:
-                    if silence_since is None:
-                        silence_since = now
-                    elif now - silence_since >= CFG["silence_ms"] / 1000.0:
-                        start = max(0, speech_start_total - int(0.3 * TARGET_RATE))
-                        # utterance window from the ring (ring holds last RING_SECONDS)
-                        ring_start_abs = total_written - len(ring)
-                        lo = max(0, start - ring_start_abs)
-                        audio = np.array(ring[lo:], dtype=np.float32) if lo < len(ring) else np.zeros(0, dtype=np.float32)
-                        in_speech = False
-                        silence_since = None
-                        text = ""
-                        if self.transcriber is not None and len(audio) > 1600:
-                            async with stt_lock:
-                                try:
-                                    text = await asyncio.to_thread(self.transcriber.transcribe, audio, True)
-                                except Exception as e:
-                                    print(f"[core] STT error: {e}", flush=True)
-                        if text:
-                            self.last_final_text = text
-                            self.log_session("final", text=text)
-                            await self.broadcast({"t": "final", "text": text})
-                else:
-                    silence_since = None
-
-            # ---- live partials (skip while a final transcription is running) ----
-            if now - last_partial_at >= CFG["partial_interval_s"] and not stt_lock.locked():
-                recently_active = in_speech or (silence_since is not None and now - silence_since < 2.0)
-                if self.transcriber is not None and recently_active:
-                    n = int(min(len(ring), 15.0 * TARGET_RATE))
-                    if n > 4800:  # >= 0.3 s of audio in the window
-                        partial_audio = np.array(ring[-n:], dtype=np.float32)
-                        try:
-                            text = await asyncio.to_thread(self.transcriber.transcribe, partial_audio, True)
-                        except Exception:
-                            text = ""
-                        if text and text != last_partial_text:
-                            last_partial_text = text
-                            last_partial_at = now
-                            await self.broadcast({"t": "partial", "text": text})
-
         try:
-            cap.stop()
+            cap = LoopbackCapture()
+            self._capture = cap
+            ring: list[float] = []
+            total_written = 0
+            last_tick = time.time()
+            noise_floor = 0.0025
+            in_speech = False
+            speech_start_total = 0
+            silence_since: float | None = None
+            last_partial_at = 0.0
+            last_partial_text = ""
+            stt_lock = asyncio.Lock()
+
+            await self.broadcast({"t": "status", "msg": f"listening on {cap.device_name!r}"})
+
+            while self.session_active:
+                samples, elapsed = await asyncio.to_thread(cap.read, 0.02)
+                now = time.time()
+                expected = int(elapsed * TARGET_RATE)
+                if len(samples) == 0 and expected > 0:
+                    samples = np.zeros(expected, dtype=np.float32)
+
+                ring.extend(samples.tolist())
+                total_written += len(samples)
+                max_samples = RING_SECONDS * TARGET_RATE
+                if len(ring) > max_samples:
+                    excess = len(ring) - max_samples
+                    del ring[:excess]
+                    speech_start_total = max(0, speech_start_total - excess)
+                last_tick = now
+
+                # ---- endpointing on the newest 30 ms frame ----
+                frame = ring[-FRAME_SAMPLES:] if len(ring) >= FRAME_SAMPLES else np.zeros(0)
+                r = rms(frame)
+                if r < noise_floor * 1.6:
+                    noise_floor = max(0.0005, 0.97 * noise_floor + 0.03 * r)
+                thr = max(noise_floor * 3.0, 0.004)
+
+                if not in_speech and len(frame) and r > thr:
+                    in_speech = True
+                    speech_start_total = total_written - len(frame)
+                    silence_since = None
+                    await self.broadcast({"t": "speech_started"})
+                elif in_speech:
+                    if r <= thr:
+                        if silence_since is None:
+                            silence_since = now
+                        elif now - silence_since >= CFG["silence_ms"] / 1000.0:
+                            start = max(0, speech_start_total - int(0.3 * TARGET_RATE))
+                            # utterance window from the ring (ring holds last RING_SECONDS)
+                            ring_start_abs = total_written - len(ring)
+                            lo = max(0, start - ring_start_abs)
+                            audio = np.array(ring[lo:], dtype=np.float32) if lo < len(ring) else np.zeros(0, dtype=np.float32)
+                            in_speech = False
+                            silence_since = None
+                            text = ""
+                            if self.transcriber is not None and len(audio) > 1600:
+                                async with stt_lock:
+                                    try:
+                                        text = await asyncio.to_thread(self.transcriber.transcribe, audio, True)
+                                    except Exception as e:
+                                        print(f"[core] STT error: {e}", flush=True)
+                            if text:
+                                self.last_final_text = text
+                                self.log_session("final", text=text)
+                                await self.broadcast({"t": "final", "text": text})
+                    else:
+                        silence_since = None
+
+                # ---- live partials (skip while a final transcription is running) ----
+                if now - last_partial_at >= CFG["partial_interval_s"] and not stt_lock.locked():
+                    recently_active = in_speech or (silence_since is not None and now - silence_since < 2.0)
+                    if self.transcriber is not None and recently_active:
+                        n = int(min(len(ring), 15.0 * TARGET_RATE))
+                        if n > 4800:  # >= 0.3 s of audio in the window
+                            partial_audio = np.array(ring[-n:], dtype=np.float32)
+                            try:
+                                text = await asyncio.to_thread(self.transcriber.transcribe, partial_audio, True)
+                            except Exception:
+                                text = ""
+                            if text and text != last_partial_text:
+                                last_partial_text = text
+                                last_partial_at = now
+                                await self.broadcast({"t": "partial", "text": text})
+        except Exception as e:
+            print(f"[core] Error in session loop: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
         finally:
-            self._capture = None
+            if self._capture:
+                try:
+                    self._capture.stop()
+                except Exception:
+                    pass
+                self._capture = None
 
     # ---------------- answering ----------------
 
     async def answer(self, question: str):
+        """
+        Handles the generation of an answer to an interview question.
+        
+        Uses the HybridRouter to decide between a deterministic Trie match
+        (from the QA bank) and RAG-based generation.
+        """
         t0 = time.time()
         if not self.brain.ready:
             try:
@@ -244,13 +298,38 @@ class Core:
             except Exception as e:
                 print(f"[core] brain load failed: {e}", flush=True)
 
+        # Use the hybrid router to decide between the trie (scripted) and RAG
+        # This implements the deterministic logic from trie_plan.md
+        resolution = await self.router.resolve_query(question)
+        
+        source = resolution.get("source", "rag")
+        content = resolution.get("content", "")
+        
+        if source == "trie":
+            # Content is already the scripted answer from qa_bank.yml
+            # We broadcast it directly to keep latency minimal for known questions.
+            await self.broadcast({"t": "answer_start", "question": question})
+            self.log_session("answer_start", question=question)
+            await self.broadcast({"t": "token", "text": content})
+            latency_ms = int((time.time() - t0) * 1000)
+            self.log_session("answer_end", full=content, latency_ms=latency_ms)
+            await self.broadcast({"t": "answer_end", "full": content, "latency_ms": latency_ms})
+            return
+
+        # Fallback to RAG generation
+        # We reuse the brain's retrieval to get the best chunks for the prompt
         evidence = []
         try:
             evidence = await asyncio.to_thread(self.brain.retrieve, question, 8)
         except Exception as e:
             print(f"[core] retrieve failed: {e}", flush=True)
-
+        
+        if evidence and isinstance(evidence, list):
+            content = "\n".join(evidence)
+            
+        # Build system prompt with gathered evidence
         system = build_system_prompt(self.brain.profile_summary, evidence, self.brain.jd_context())
+        
         await self.broadcast({"t": "answer_start", "question": question})
         self.log_session("answer_start", question=question)
 
@@ -263,13 +342,13 @@ class Core:
                     json={
                         "model": CFG["llm_model"],
                         "stream": True,
-                        # keep the model resident for the whole interview
                         "keep_alive": "30m",
                         "messages": [
                             {"role": "system", "content": system},
                             {"role": "user", "content": question},
                         ],
                         "options": {"temperature": 0.4, "num_predict": 700},
+                        "think": False,
                     },
                 ) as resp:
                     if resp.status_code != 200:
@@ -353,3 +432,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+

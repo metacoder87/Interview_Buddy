@@ -1,0 +1,50 @@
+entries:
+- id: Q1
+  question: Tell me about yourself
+  triggers:
+    - tell me about yourself
+    - share your background
+  answer: |
+    Applied AI engineer and quantitative developer with six-plus years of full-stack experience, focused on local-first AI systems — RAG applications, multi-agent orchestration over open-weight models, and vector search infrastructure. I run my own shop, G M Cubed Designs; recent flagships are Sidekick LLM, a desktop knowledge system for local LLMs, SYNAPSE, a job‑intelligence platform that ranks semantic fit and produces fact‑checked company dossiers with a local agent crew, and Investment Matrix, an event‑driven crypto research and paper‑trading platform with a seven-agent local AI research team. Before that I was an Aviation Structural Mechanic in the US Navy — three years of zero‑fail diagnostics under pressure, which is still how I approach debugging.
+  gotcha_warning: ""
+- id: Q2
+  question: Why are you interested in this role?
+  triggers:
+    - why are you interested in this role
+    - what motivates you for this position
+  answer: |
+    Three reasons. One, the role sits exactly at the intersection I've been building toward: applied AI systems that have to be reliable enough for real decisions — my work on RAG evaluation and deterministic guardrails around LLMs maps directly onto that. Two, I do my best work when the system has a measurable quality bar; your [product/domain] gives me something concrete to optimize against. Three, I've spent years shipping solo at full‑stack speed — requirements through observability — so I can be productive in week one without a long ramp.
+  gotcha_warning: ""
+- id: Q3
+  question: Walk me through Sidekick LLM
+  triggers:
+    - walk me through sidekick llm
+    - explain sidekick llm
+  answer: |
+    Sidekick LLM is a privacy‑first desktop knowledge system for local LLMs via Ollama. The design decision that defines it: the product isn't the chat window, it's the corpus — persistent conversations, a de‑duplicated memory of personal facts recalled by relevance rather than recency, and domain "Experts" built from your own PDFs. Engineering highlights I'm proud of:
+    federated Expert consultation where one query searches multiple vaults and the prompt explicitly asks the model to surface disagreements instead of flattening them, with a grounding badge per answer; and an embedding contract treated as a load‑bearing invariant — provenance on every vector, dimension‑matched visibility rules, so retrieval degrades loudly instead of silently. It's Electron + React + SQLite in WAL mode with FTS5, fully offline.
+  gotcha_warning: ""
+- id: Q4
+  question: What was the hardest technical problem in Sidekick LLM?
+  triggers:
+    - hardest technical problem sidekick llm
+    - toughest issue sidekick llm
+  answer: |
+    Silent retrieval degradation. Vector search will happily return confidently wrong results when embeddings drift or a model swap changes vector dimensions — and users never know. I made correctness an invariant instead of a hope: every stored vector carries its embedding model and dimension, the write boundary rejects empty vectors, retrieval excludes and reports mismatched vectors rather than scoring them zero, and existing vaults are repairable through in‑place re‑indexing. The general lesson I carry into AI work: probabilistic components need deterministic guardrails around their inputs and outputs, and honest failure reporting beats blanket success.
+  gotcha_warning: ""
+- id: Q5
+  question: Walk me through SYNAPSE
+  triggers:
+    - walk me through synapse
+    - explain synapse
+  answer: |
+    SYNAPSE is a local‑first job‑intelligence platform. Six source adapters — USAJobs, Adzuna, Jooble, Greenhouse, Lever, RSS — normalize into one Pydantic model; a deterministic regex kill switch discards obvious mismatches before I spend embedding compute; MiniLM embeddings score alignment against my profile; PostgreSQL is the relational truth with ChromaDB keyed by the same UUIDs. On demand, a CrewAI crew on local Ollama — Scout, Networker, Fact‑Checker — produces a company dossier where claims carry evidence references, numeric literals are checked deterministically, a temperature‑zero verifier returns supported/contradicted/insufficient verdicts, and Python renders the final document rather than the model. Freshness is enforced three ways: daily expiry, a 12‑hour heartbeat probing live URLs, weekly purge across both stores.
+  gotcha_warning: ""
+- id: Q6
+  question: How do you keep an LLM from hallucinating in a system like SYNAPSE?
+  triggers:
+    - how to keep llm from hallucinating synapse
+    - prevent lla m hallucination
+  answer: |
+    Four layers. One, constrain where the model operates — it generates claims inside a stage, not the whole document. Two, make claims checkable — every claim carries evidence references and numeric literals are validated by deterministic code, not another model call. Three, use a verifier with a restricted output space — supported, contradicted, or insufficient at temperature zero; "insufficient" is a first‑class answer. Four, keep final rendering deterministic — Python assembles the cited dossier from approved claims only. The same principle gates my application documents: only facts in an approved ledger can become candidate claims.
+  gotcha_warning: ""

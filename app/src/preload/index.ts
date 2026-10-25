@@ -56,6 +56,12 @@ const api = {
   ): Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }> =>
     ipcRenderer.invoke('fetch-openai-models', apiKey),
 
+  // Ollama (local) models
+  fetchOllamaModels: (): Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }> =>
+    ipcRenderer.invoke('fetch-ollama-models'),
+  setOllamaModel: (modelName: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('set-ollama-model', modelName),
+
   // Audio capture
   startCapture: (): Promise<{ success: boolean }> => ipcRenderer.invoke('start-capture'),
   stopCapture: (): Promise<{ success: boolean }> => ipcRenderer.invoke('stop-capture'),

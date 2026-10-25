@@ -16,24 +16,35 @@ import threading
 import time
 
 import numpy as np
+import pyaudiowpatch as pyaudio
 
 TARGET_RATE = 16000
 CAPTURE_RATE = 48000  # WASAPI shared-mode rate on Windows
 
 
 def find_loopback_device():
-    """Locate the loopback device for the default render endpoint."""
-    import pyaudiowpatch as pyaudio
-
+    """
+    Locate the WASAPI loopback device corresponding to the default output device.
+    
+    This is critical for capturing the interviewer's audio in Zoom/Teams/Meet
+    while structurally ignoring the local microphone.
+    
+    Returns:
+        tuple[pyaudio.PyAudio, dict]: The PyAudio instance and the loopback
+        device info dictionary.
+    
+    Raises:
+        RuntimeError: If no loopback device can be identified.
+    """
     p = pyaudio.PyAudio()
-    try:
-        if hasattr(p, "get_default_wasapi_loopback"):
-            dev = p.get_default_wasapi_loopback()
-            if dev:
-                return p, dev
-    except Exception:
-        pass
+    
+    # Try primary method for default WASAPI loopback
+    if hasattr(p, "get_default_wasapi_loopback"):
+        dev = p.get_default_wasapi_loopback()
+        if dev:
+            return p, dev
 
+    # Fallback: find loopback device that contains the default output device's name
     try:
         wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
         default_out = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
@@ -43,22 +54,29 @@ def find_loopback_device():
     except Exception:
         pass
 
+    # Last ditch effort: return the first available loopback device
     for dev in p.get_loopback_device_info_generator():
         return p, dev
 
-    raise RuntimeError("No WASAPI loopback device found")
+    raise RuntimeError("No WASAPI loopback device found. Ensure your audio drivers are up to date.")
 
 
 def _downmix_and_resample(samples: np.ndarray, channels: int, in_rate: int) -> np.ndarray:
-    """Downmix multi-channel audio to mono and resample to TARGET_RATE (16000)."""
+    """
+    Downmix multi-channel audio to mono and resample to TARGET_RATE (16000).
+    
+    Handles conversion from standard Windows shared-mode rates (e.g., 48000Hz)
+    to the model's expected input rate (16000Hz).
+    """
     if len(samples) == 0:
         return np.zeros(0, dtype=np.float32)
+    
+    # Average all channels into one mono stream
     if channels > 1:
-        # Reshape to (frames, channels) and average across channels
         n_frames = len(samples) // channels
         samples = samples[: n_frames * channels].reshape(-1, channels).mean(axis=1)
 
-    # Decimate if 48000 -> 16000
+    # Handle common 48kHz -> 16kHz decimation
     if in_rate == 48000:
         n = len(samples) - (len(samples) % 3)
         if n <= 0:
@@ -67,7 +85,7 @@ def _downmix_and_resample(samples: np.ndarray, channels: int, in_rate: int) -> n
     elif in_rate == TARGET_RATE:
         return samples.astype(np.float32)
     else:
-        # Simple linear interpolation fallback for non-48k rates
+        # Generic fallback for non-standard sample rates using linear interpolation
         duration = len(samples) / in_rate
         target_len = int(duration * TARGET_RATE)
         if target_len <= 0:
@@ -77,12 +95,17 @@ def _downmix_and_resample(samples: np.ndarray, channels: int, in_rate: int) -> n
 
 
 class LoopbackCapture:
-    """Threaded WASAPI loopback capture. Consume via .read()."""
+    """
+    Threaded WASAPI loopback capture.
+    
+    Provides a continuous 16 kHz mono float32 stream to the application.
+    The `read()` method returns a tuple of (samples, wall_seconds_elapsed)
+    to allow the consumer to handle silence gaps correctly.
+    """
 
     def __init__(self):
-        import pyaudiowpatch as pyaudio
-
         self._pa = pyaudio
+        
         # Initialize audio capture; fall back to dummy device if loopback not found
         try:
             self._p, self._dev = find_loopback_device()
@@ -118,6 +141,7 @@ class LoopbackCapture:
         print(f"[audio] loopback capture started on {self.device_name!r} (channels={self.channels}, rate={self.rate})", flush=True)
 
     def _run(self):
+        """Internal thread loop for reading from WASAPI and pushing to the queue."""
         while self._running:
             if self._stream is None:
                 time.sleep(0.02)
@@ -148,7 +172,13 @@ class LoopbackCapture:
                     self._q.put(mono_16k)
 
     def read(self, timeout: float = 0.02) -> tuple[np.ndarray, float]:
-        """Drain all buffered 16 kHz samples. Returns (samples, wall_seconds since last read)."""
+        """
+        Drain all buffered 16 kHz samples.
+        
+        Returns:
+            tuple[np.ndarray, float]: The concatenated samples and wall seconds 
+            since the last read.
+        """
         now = time.time()
         elapsed = now - self._last_read_time
         self._last_read_time = now
@@ -167,6 +197,7 @@ class LoopbackCapture:
         return out, elapsed
 
     def stop(self):
+        """Stop the capture thread and release resources."""
         if self._stopped:
             return
         self._stopped = True

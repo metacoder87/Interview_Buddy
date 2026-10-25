@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle, Coffee, Eye, EyeOff, Loader2, Mic, Save, X } from 'lucide-react'
+import { AlertCircle, CheckCircle, Coffee, Eye, EyeOff, Loader2, Mic, Save, X, Server } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { AppSettings, useInterviewStore } from '../store/interviewStore'
 
@@ -26,13 +26,51 @@ export function SettingsModal(): React.ReactNode | null {
   const [modelsError, setModelsError] = useState<string | null>(null)
   const fetchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Ollama local models
+  const [ollamaModels, setOllamaModels] = useState<ModelOption[]>([])
+  const [ollamaLoading, setOllamaLoading] = useState(false)
+  const [ollamaError, setOllamaError] = useState<string | null>(null)
+  const [selectedOllamaModel, setSelectedOllamaModel] = useState<string>('llama3:8b')
+
   const [prevSettings, setPrevSettings] = useState(settings)
   if (settings !== prevSettings) {
     setPrevSettings(settings)
     setLocalSettings(settings)
   }
 
-  // Fetch models when API key changes (with debounce)
+  // Fetch Ollama models on open
+  useEffect(() => {
+    if (!showSettings) return
+    setOllamaLoading(true)
+    setOllamaError(null)
+    window.api.fetchOllamaModels().then((result) => {
+      if (result.success) {
+        setOllamaModels(result.models)
+        // Pre-select the first model if none chosen yet
+        if (result.models.length > 0 && !result.models.find((m) => m.id === selectedOllamaModel)) {
+          setSelectedOllamaModel(result.models[0].id)
+        }
+      } else {
+        setOllamaError(result.error || 'Could not reach Ollama')
+      }
+      setOllamaLoading(false)
+    }).catch(() => {
+      setOllamaError('Ollama is not running on localhost:11434')
+      setOllamaLoading(false)
+    })
+  }, [showSettings])
+
+  const handleOllamaModelChange = async (modelName: string): Promise<void> => {
+    setSelectedOllamaModel(modelName)
+    try {
+      await window.api.setOllamaModel(modelName)
+      console.log('[settings] Ollama model set to:', modelName)
+    } catch (e) {
+      console.error('[settings] Failed to set Ollama model:', e)
+    }
+  }
+
+  // Fetch OpenAI models when API key changes (with debounce)
   useEffect(() => {
     // Clear previous timeout
     if (fetchTimeoutRef.current) {
@@ -183,7 +221,54 @@ export function SettingsModal(): React.ReactNode | null {
             </div>
           </div>
 
-          {/* OpenAI Model */}
+          {/* Ollama Local Model */}
+          <div className="space-y-2 border border-dark-700 rounded-lg p-4 bg-dark-850">
+            <div className="flex items-center gap-2 mb-1">
+              <Server size={15} className="text-green-400" />
+              <label className="block text-sm font-medium text-dark-200">
+                Local Ollama Model
+              </label>
+              <span className="ml-auto text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">Active</span>
+            </div>
+            <p className="text-xs text-dark-500">
+              Select the local LLM to use for generating interview answers via Ollama.
+              Changes take effect immediately for new questions.
+            </p>
+            {ollamaLoading ? (
+              <div className="w-full px-3 py-2 bg-dark-800 border border-dark-600 rounded-lg animate-pulse">
+                <div className="flex items-center gap-2">
+                  <Loader2 size={16} className="animate-spin text-green-400" />
+                  <span className="text-sm text-dark-400">Loading Ollama models...</span>
+                </div>
+              </div>
+            ) : ollamaError ? (
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5 text-xs text-red-400">
+                  <AlertCircle size={12} />
+                  <span>{ollamaError}</span>
+                </div>
+                <p className="text-xs text-dark-500">Make sure Ollama is running: <code className="bg-dark-800 px-1 rounded">ollama serve</code></p>
+              </div>
+            ) : (
+              <select
+                value={selectedOllamaModel}
+                onChange={(e) => handleOllamaModelChange(e.target.value)}
+                className="w-full px-3 py-2 bg-dark-800 border border-green-600/40 focus:border-green-500 rounded-lg text-sm text-dark-100 focus:outline-none transition-colors"
+              >
+                {ollamaModels.length === 0 ? (
+                  <option value="">No models found — run `ollama pull &lt;model&gt;`</option>
+                ) : (
+                  ollamaModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            )}
+          </div>
+
+          {/* OpenAI Model (for screenshot analysis) */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-dark-200">
               Answer Generation Model
