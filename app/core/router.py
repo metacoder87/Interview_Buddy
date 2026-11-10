@@ -61,19 +61,25 @@ class HybridRouter:
 
     async def resolve_query(self, text: str) -> Dict[str, Any]:
         """
-        Determines the source of the answer and retrieves the content.
-        
+        Determines whether the Trie has a scripted answer for the transcript fragment.
+
+        This method only consults the in-memory WordTokenTrie — it never calls
+        Ollama or the RAG vector store. RAG retrieval is handled separately in
+        Core.answer() so the trie path can respond in ~0 ms.
+
         Args:
             text: The transcript fragment (the question).
-            
+
         Returns:
-            Dictionary containing 'source', 'content', 'script', and 'latency_ms'.
+            Dictionary containing 'source', 'content', 'script', 'latency_ms',
+            and 'trie_hit' (True when a scripted answer was found).
         """
         start_time = time.perf_counter()
-        
+
         content = None
         source = "rag"
-        
+        trie_hit = False
+
         # Check Trie for an exact match or prefix match unless retrieval_mode is explicitly 'rag'
         hit = None
         if self.config.get("retrieval_mode") != "rag":
@@ -82,20 +88,16 @@ class HybridRouter:
         if hit:
             content = hit.get("answer")
             source = "trie"
-        else:
-            # Fallback to RAG
-            content = self.brain.retrieve(text, k=8)
-            # Join chunks if multiple are returned
-            if content and isinstance(content, list):
-                content = "\n".join(content)
+            trie_hit = True
 
         latency_ms = int((time.perf_counter() - start_time) * 1000)
-        
+
         return {
             "source": source,
             "content": content,
             "script": content if source == "trie" else None,
-            "latency_ms": latency_ms
+            "latency_ms": latency_ms,
+            "trie_hit": trie_hit,
         }
 
 __all__ = ["HybridRouter", "QA_BANK_PATH"]

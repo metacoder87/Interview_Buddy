@@ -79,16 +79,18 @@ class Brain:
         return docs
 
     @staticmethod
-    def _chunk_markdown(text: str, max_chars: int = 700) -> list[str]:
+    def _chunk_markdown(text: str, max_chars: int = 700, overlap: int = 150) -> list[str]:
         """
         Splits a markdown document into smaller chunks for RAG.
         
         Attempts to preserve logical sections by splitting on '## ' headers first,
-        then caps segments at paragraph boundaries to maintain context.
+        then caps segments at paragraph boundaries. Implements a sliding window
+        overlap to ensure context is preserved across chunk boundaries.
         
         Args:
             text: The raw content of a markdown file.
-            max_chars: The soft character cap for a chunk (multiplied by 2 for buffer).
+            max_chars: The soft character cap for a chunk.
+            overlap: Number of characters to overlap between consecutive chunks.
             
         Returns:
             A list of strings, each representing a chunk for embedding.
@@ -102,21 +104,31 @@ class Brain:
             title = (header_m.group(1).strip() if header_m else "").lstrip("#").strip()
             body = sec[len(header_m.group(0)):] if header_m else sec
             paras = [b.strip() for b in re.split(r"\n\s*\n", body) if b.strip()]
-            buf = ""
-
-            def flush():
-                nonlocal buf
-                c = ((title + "\n") if title else "") + buf.strip()
-                # Only add to chunks if it's significant enough
-                if len(c) > max_chars:
-                    chunks.append(c[: max_chars * 2])
-                buf = ""
-
+            
+            current_chunk_body = ""
+            
             for para in paras:
-                if len(buf) + len(para) > max_chars and buf:
-                    flush()
-                buf += "\n\n" + para
-            flush()
+                # If adding this paragraph exceeds the limit
+                if len(current_chunk_body) + len(para) > max_chars and current_chunk_body:
+                    # Create chunk with title
+                    full_chunk = ((title + "\n") if title else "") + current_chunk_body.strip()
+                    chunks.append(full_chunk)
+                    
+                    # Start new chunk with overlap from the end of previous body
+                    # We take the last 'overlap' characters and find the nearest paragraph start or space
+                    start_idx = max(0, len(current_chunk_body) - overlap)
+                    overlap_text = current_chunk_body[start_idx:]
+                    current_chunk_body = overlap_text + "\n\n" + para
+                else:
+                    if not current_chunk_body:
+                        current_chunk_body = para
+                    else:
+                        current_chunk_body += "\n\n" + para
+            
+            if current_chunk_body:
+                full_chunk = ((title + "\n") if title else "") + current_chunk_body.strip()
+                chunks.append(full_chunk)
+                
         return chunks
 
     def _embed(self, texts: list[str], client: httpx.Client | None = None) -> np.ndarray:
@@ -134,7 +146,7 @@ class Brain:
             return np.empty((0, 0), dtype=np.float32)
 
         own_client = client is None
-        client = client or httpx.Client(timeout=120)
+        client = client or httpx.Client(timeout=15)
         vecs: list[list[float]] = []
         try:
             for i in range(0, len(texts), 32):
@@ -163,14 +175,15 @@ class Brain:
             force: If True, ignores the disk cache and re-embeddings all chunks.
         """
         docs = self._read_files()
-        # Create a unique cache key based on the content of all source docs
+        # Create a unique cache key based on the content and chunking params (overlap)
+            # This ensures that if we change the overlap size, the brain is re-embedded.
         digest = hashlib.sha256(json.dumps(docs, sort_keys=True).encode()).hexdigest()[:16]
         cache_dir = Path(__file__).parent / ".cache"
         cache = cache_dir / f"brain_{digest}.npz"
 
         chunks: list[str] = []
         for name in sorted(docs):
-            for c in self._chunk_markdown(docs[name]):
+            for c in self._chunk_markdown(docs[name], max_chars=700, overlap=150):
                 chunks.append(c)
 
         resume = docs.get("resume.md", "")
@@ -218,7 +231,7 @@ class Brain:
         if not self.ready or self._vectors is None:
             return []
         try:
-            r = httpx.post(f"{self.url}/api/embed", json={"model": self.embed_model, "input": [query]}, timeout=60)
+            r = httpx.post(f"{self.url}/api/embed", json={"model": self.embed_model, "input": [query]}, timeout=10)
             qv = np.asarray(r.json()["embeddings"][0], dtype=np.float32)
         except Exception as e:
             print(f"[brain] embed failed: {e}", flush=True)

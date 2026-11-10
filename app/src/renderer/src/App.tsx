@@ -9,7 +9,7 @@ import { useInterviewEvents } from './hooks/useInterviewEvents'
 import { useInterviewStore } from './store/interviewStore'
 
 function App(): React.JSX.Element {
-  const { setShowSettings, settings, showHistory, setShowHistory } = useInterviewStore()
+  const { setShowSettings, settings, showHistory, setShowHistory, showChrome } = useInterviewStore()
 
   // Set up IPC event listeners ONCE at the app level
   useInterviewEvents()
@@ -41,8 +41,8 @@ function App(): React.JSX.Element {
 
   return (
     <div className="app-overlay-root flex flex-col h-screen bg-transparent text-dark-100 overflow-hidden">
-      <Header />
-      <StatusBar />
+      {showChrome && <Header />}
+      {showChrome && <StatusBar />}
       <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {showHistory ? <HistoryPanel onClose={() => setShowHistory(false)} /> : <AnswerPanel />}
         <TranscriptPanel />

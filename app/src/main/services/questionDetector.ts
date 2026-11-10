@@ -96,7 +96,7 @@ export class QuestionDetector extends EventEmitter {
   private transcriptBuffer: string[] = []
   private minQuestionLength = 15 // Minimum characters for a valid question
   private minWordCount = 3 // Minimum words for a valid question
-  private confidenceThreshold = 0.5 // Threshold for question detection
+  private confidenceThreshold = 0.35 // Threshold for question detection
   private earlyDetectionThreshold = 0.75 // Threshold for early detection (without waiting)
   private lastEarlyDetection: string | null = null // Track last early detection to avoid duplicates
 

@@ -113,14 +113,27 @@ class LoopbackCapture:
             self.channels: int = int(self._dev.get("maxInputChannels", 2))
             self.rate: int = int(self._dev.get("defaultSampleRate", CAPTURE_RATE))
             self.frames_per_buffer: int = int(self.rate * 0.02)  # 20 ms chunk
-            self._stream = self._p.open(
-                format=self._pa.paFloat32,
-                channels=self.channels,
-                rate=self.rate,
-                input=True,
-                input_device_index=self._dev["index"],
-                frames_per_buffer=self.frames_per_buffer,
-            )
+
+            # PyAudioWPatch loopback devices: try input_device_info dict first
+            # (recommended for WASAPI loopback), fall back to input_device_index.
+            try:
+                self._stream = self._p.open(
+                    format=self._pa.paFloat32,
+                    channels=self.channels,
+                    rate=self.rate,
+                    input=True,
+                    input_device_info=self._dev,
+                    frames_per_buffer=self.frames_per_buffer,
+                )
+            except Exception:
+                self._stream = self._p.open(
+                    format=self._pa.paFloat32,
+                    channels=self.channels,
+                    rate=self.rate,
+                    input=True,
+                    input_device_index=int(self._dev["index"]),
+                    frames_per_buffer=self.frames_per_buffer,
+                )
         except Exception as e:
             print(f"[audio] fallback init (no loopback device): {e}", flush=True)
             # Use a dummy device configuration

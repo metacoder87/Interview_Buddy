@@ -218,6 +218,10 @@ export function initializeIpcHandlers(window: BrowserWindow): void {
       cfg.llm_model = modelName
       fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2))
       console.log('[handlers] Ollama model updated to:', modelName)
+
+      // Notify the running core process to reload config (picks up new model without restart)
+      coreLink.send({ t: 'reload_config' })
+
       return { success: true }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }

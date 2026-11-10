@@ -48,6 +48,7 @@ interface InterviewState {
 
   // History view
   showHistory: boolean
+  showChrome: boolean
 
   // Session timer
   isSessionActive: boolean
@@ -117,6 +118,7 @@ export const useInterviewStore = create<InterviewState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   showSettings: false,
   showHistory: false,
+  showChrome: true,
 
   isSessionActive: true,
   sessionStartTime: null,
@@ -194,6 +196,8 @@ export const useInterviewStore = create<InterviewState>((set, get) => ({
   setShowSettings: (show) => set({ showSettings: show }),
 
   setShowHistory: (show) => set({ showHistory: show }),
+
+  setShowChrome: (show) => set({ showChrome: show }),
 
   startSession: () =>
     set({

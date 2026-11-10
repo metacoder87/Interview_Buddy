@@ -8,7 +8,8 @@
   
   "stt_model": "medium",
   "brain_dir": "../../",
-  "silence_ms": 900,
-  "partial_interval_s": 1.2,
-  "min_question_words": 4
+  "silence_ms": 600,
+  "partial_interval_s": 0.5,
+  "min_question_words": 4,
+  "max_utterance_s": 15
 }

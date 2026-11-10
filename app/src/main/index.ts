@@ -1,10 +1,12 @@
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
-import { app, BrowserWindow, nativeImage, screen, session, shell } from 'electron'
+import { app, BrowserWindow, globalShortcut, nativeImage, screen, session, shell } from 'electron'
 import { join } from 'path'
 import icon from '../../resources/icon.png?asset'
 import { cleanupIpcHandlers, initializeIpcHandlers } from './ipc/handlers'
+import { coreLink } from './services/coreLink'
 
 let mainWindow: BrowserWindow | null = null
+let isSessionActive = false
 
 function createWindow(): void {
   const appIcon = nativeImage.createFromPath(icon)
@@ -45,7 +47,7 @@ function createWindow(): void {
       mainWindow?.setIcon(appIcon)
     }
     mainWindow?.show()
-    mainWindow?.focus()
+    // Never steal focus — overlay must stay invisible during the interview
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -86,6 +88,31 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Register global hotkeys (none steal focus)
+  globalShortcut.register('CommandOrControl+Alt+Space', () => {
+    isSessionActive = !isSessionActive
+    coreLink.send({ t: isSessionActive ? 'start' : 'stop' })
+    console.log(`[hotkey] session ${isSessionActive ? 'started' : 'stopped'}`)
+  })
+
+  globalShortcut.register('CommandOrControl+Alt+Q', () => {
+    coreLink.send({ t: 'trigger' })
+    console.log('[hotkey] force-answer triggered')
+  })
+
+  globalShortcut.register('CommandOrControl+Alt+H', () => {
+    if (mainWindow?.isVisible()) {
+      mainWindow.hide()
+    } else {
+      mainWindow?.show()
+    }
+  })
+
+  globalShortcut.register('CommandOrControl+Alt+C', () => {
+    mainWindow?.webContents.send('clear-answer')
+    console.log('[hotkey] clear answer')
+  })
+
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -102,4 +129,5 @@ app.on('window-all-closed', () => {
 // Cleanup on quit
 app.on('before-quit', () => {
   cleanupIpcHandlers()
+  globalShortcut.unregisterAll()
 })
